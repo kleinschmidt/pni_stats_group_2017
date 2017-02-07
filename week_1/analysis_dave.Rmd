@@ -1,0 +1,267 @@
+```{r}
+## install.packages('tidyverse')
+library(tidyverse)
+library(forcats)
+```
+
+The main data cleaning task is to convert categorical variables into factors and
+set contrasts on them.
+
+Make sure you execute this file from the same directory.
+
+```{r}
+
+columns <- c("RT", "log_RT", "ID", "trial", "featureCorrelation",
+             "taskTransition", "congruency", "correct", "task", "miniblock_all",
+             "miniblock_n") 
+
+infile <- 'batch2_33final.csv'
+
+# a pipeable contrasts setter
+set_contrasts <- function(x, new_contr) {
+  contrasts(x) <- new_contr
+  return(x)
+}
+
+d <- readr::read_csv(infile, col_names = columns) %>%
+  mutate_each(funs(as.factor), featureCorrelation, taskTransition, congruency) %>%
+  mutate(featureCorrelation = fct_recode(featureCorrelation,
+                                         uncorrelated='0', correlated='1'),
+         taskTransition =     fct_recode(taskTransition,
+                                         noTransition='0', transition='1'),
+         congruency =         fct_recode(congruency,
+                                         incongruent='0', congruent='1')) %>%
+  mutate_each(funs(set_contrasts(., c(-0.5, 0.5))),
+              featureCorrelation, taskTransition, congruency)
+
+summary(d)
+```
+
+What's the data look like? Good place to start: just make a histogram of the RTs
+and log-RTs to see if anything looks funny.
+
+```{r}
+
+ggplot(d, aes(x=RT)) + geom_histogram()
+ggplot(d, aes(x=log_RT)) + geom_histogram()
+
+```
+
+There's some suspiciously low RTs (no one can respond with an RT of less than
+around 100-150 ms).  Next thing to check is if these are distributed evenly
+across people (`ID`), or concentrated.
+
+```{r}
+
+d %>%
+  group_by(ID) %>%
+  summarise(n_too_fast = sum(RT < 0.01, na.rm=TRUE),
+            prop_too_fast = n_too_fast / n()) %>%
+  filter(n_too_fast > 0)
+
+```
+
+There's only 12 (out of 33) subjects with any of these responses, and they're
+disproportionately clustered in subjects 7 (17% of responses) and 22 (31%!!).
+So these subjects might be excluded as outliers.  Even if we're using mixed
+effects models, those assume that the distribution of subject means is normal,
+and so outlier subjects can still bias the fit.  We can see that these really
+pull down the average log RT:
+
+```{r}
+
+d %>%
+  group_by(ID) %>%
+  summarise(log_RT=mean(log_RT, na.rm=TRUE)) %>%
+  arrange(log_RT)
+
+```
+
+# Effects of different conditions
+
+Some figures! Since there is between-subject variation of within-subject
+effects, we don't want to just plot means and SEs computed from treating the
+whole dataset is i.i.d. But if we wanted to, here is one way to do this:
+
+```{r}
+
+ggplot(d, aes(x=taskTransition, y=log_RT)) +
+  geom_pointrange(stat='summary', fun.data='mean_cl_boot')
+
+```
+
+
+## Plotting effect of each variable separately
+
+There are many ways to make a plot such as this.
+
+```{r}
+
+# imperative "brute force": generate three separate plots and combine
+p_taskTransition_naive <- ggplot(d, aes(x=taskTransition, y=log_RT)) + stat_summary(fun.data="mean_cl_normal")
+p_congruency_naive <- ggplot(d, aes(x=congruency, y=log_RT)) + stat_summary(fun.data="mean_cl_normal")
+p_featureCorrelation_naive <- ggplot(d, aes(x=featureCorrelation, y=log_RT)) + stat_summary(fun.data="mean_cl_normal")
+gridExtra::grid.arrange(p_taskTransition_naive, p_congruency_naive, p_featureCorrelation_naive, nrow=1)
+
+```
+
+The brute force method is conceptually simple but you end up doing a lot of
+typing and repeating code.  If you want to change something about the plot, you
+have to change it in three places.  Moreover, the plotting code is _identical_
+except for the variable on the x-axis.
+
+We can use tools from `purrr`, an R package for functional programming, to take
+advantage of this.  The `purrr::map` function takes some data (a list, vector,
+etc.) and "maps" a function over each element, returning a new list that
+collects the results.  So we just need to write a function that will construct
+our plot, and then apply it to each variable we want to plot in this way using
+`map`:
+
+```{r}
+
+plotter <- function(var_name) {
+  ggplot(d, aes_string(x=var_name, y='log_RT')) +
+    geom_pointrange(stat='summary', fun.data='mean_cl_normal')
+}
+
+variables <- c('taskTransition', 'congruency', 'featureCorrelation')
+
+# other arguments to map() are passed to the function.  So this expands to
+# list(plotter(variables[1], data=d), plotter(variables[2], data=2), ...)
+plots <- map(variables, plotter)
+
+print(plots)
+```
+
+### Anonymous functions
+
+If you don't want to define the `plotter` function by name (maybe you'll have
+lots of different "plotter" functions), you can use what's called an _anonymous
+function_, which (in R) is just a function that hasn't been assigned a name:
+
+```{r}
+plots <- map(variables,
+             function(var_name) {
+               ggplot(d, aes_string(x=var_name, y='log_RT')) +
+                 geom_pointrange(stat='summary', fun.data='mean_cl_normal')
+             })
+```
+
+`purrr` also provides a convenient shorthand for anonymous functions with one or
+two arguments, based on an abuse of the `~`:
+
+```{r}
+plots <- map(variables, 
+             ~ ggplot(d, aes_string(x=.x, y='log_RT')) +
+               geom_pointrange(stat='summary', fun.data='mean_cl_normal'))
+```
+
+This saves you from having to type the `function(...) {...}` boilerplate: within
+this expression, `.x` (or `.`) stands for the first argument, and `.y` for the
+second.  This is mostly useful for short functions (like `~.+1`, which is much
+more concise and perhaps easier to read then `function(x) {x+1}`, especially
+because `.` is used as a placeholder symbol for function arguments throughout
+the tidyverse).  But it can be harder to read when things get more complex, so
+use with caution.
+
+### Combining plots
+
+Now the trick is that we have a _list_ of plots, instead of three plots assigned
+to separate variables like before.  We could manually unpack this list, passing
+each element to `grid.arrange`:
+
+```{r}
+
+# instead of:
+# gridExtra::grid.arrange(p_taskTransition_naive, p_congruency_naive, p_featureCorrelation_naive, nrow=1)
+gridExtra::grid.arrange(plots[[1]], plots[[2]], plots[[3]], nrow=1)
+
+```
+
+But this is fragile: what if we decide we just want two plots, or we want five?
+Instead, `purrr` provides the `lift` function which automates this unpacking for
+us.  If `f` is a function that takes three arguments,, then `lift(f)` is a new
+function that takes a _single_ argument, which is a _list_ of arguments that
+will be "unpacked" and passed to `f`.  An example makes this clearer:
+
+```{r}
+
+f <- function(a, b, c) {
+  (a+b)*c
+}
+
+g <- lift(f)
+
+f(1, 3, 2)
+g(c(1,3,2))
+```
+
+This might not seem that handy on its own, but when you combine it with the
+output of `map` above:
+
+```{r}
+
+# instead of
+# gridExtra::grid.arrange(plots[[1]], plots[[2]], plots[[3]], nrow=1)
+lift(gridExtra::grid.arrange)(plots, nrow=1)
+```
+
+Finally, we can put all these together with pipes:
+
+```{r}
+
+variables %>%
+  map(~ ggplot(d, aes_string(x=.x, y='log_RT')) +
+        geom_pointrange(stat='summary', fun.data='mean_cl_normal')) %>%
+  lift(gridExtra::grid.arrange, nrow=1)()
+
+```
+
+You can read this as follows: for the variables I'm interested in, plot log RT
+as a function of each one, and then combine these plots with `grid.arrange` (in
+a single row).  This way of writing code allows you to express your intentions
+clearly, without cluttering up the workspace with lots of variables that you
+have to keep track of and without writing a lot of "boilerplate" code.  Thinking
+functionally takes a little getting used to (`lift` in particular can be tricky
+to wrap your head around) but it pays dividends.
+
+### Gathering facets
+
+Another way to make plots like this is to use `ggplot`s faceting functionality.
+But this requires that we change the format of the data: we need to get the
+three variables we're interested in into a _single column_, with another column
+that tells us which variable the RT corresponds to.  `tidyr::gather` works this
+way: it "gathers" a number of columns into one, creating a "longer" data frame:
+
+```{r}
+
+d_long <- gather_(d, key='variable', value='val', gather_cols = variables)
+print(d_long)
+# gather_() lets you pass a vector/list of columns to gather (like we have),
+# while gather() requires columns as unquoted arguments:
+# gather(d, key='variable', value='val', featureCorrelation, taskTransition, congruency)
+
+ggplot(d_long, aes(x=val, y=log_RT)) +
+  geom_pointrange(stat='summary', fun.data='mean_cl_normal') +
+  facet_grid(.~variable, scales='free_x')
+
+# scales='free_x' means to adjust the x axis scale for each panel (because the
+# values are different for each variable.
+
+```
+
+We can also write this as a big pipe:
+
+```{r, eval=FALSE]
+
+d %>%
+  gather_(key='variable', value='val', gather_cols = variables) %>%
+  ggplot(aes(x=val, y=log_RT)) +
+  geom_pointrange(stat='summary', fun.data='mean_cl_normal') +
+  facet_grid(.~variable, scales='free_x')
+
+```
+
+
+
+.
