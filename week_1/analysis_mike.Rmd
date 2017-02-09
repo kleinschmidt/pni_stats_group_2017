@@ -7,7 +7,7 @@ First, we load the data!
 
 ```{r}
 library(data.table)
-d <- fread('~/Box Sync/Research/analysis software/markus_dots_data/batch2_33final.csv')
+d <- fread('batch2_33final.csv')
 colnames(d) <- c("RT","log_RT","ID", "trial", "featureCorrelation", "TaskTransition", "congruency", "correct", "task", "Miniblock_all", "Miniblock_n")
 summary(d)
 ```
@@ -65,5 +65,5 @@ m1 <- lmer(log_RT ~ 0 + TaskTransition + (1|ID), data=d)
 
 ```{r}
 m_lmer <- lmer(log_RT ~ TaskTransition * congruency * featureCorrelation + (1 | ID), data=d)
-m_rstanarm <- stan_glmer(log_RT ~ TaskTransition * congruency * featureCorrelation + (1 | ID), data=d, algorithm = 'fullrank')
+m_rstanarm <- rstanarm::stan_glmer(log_RT ~ TaskTransition * congruency * featureCorrelation + (1 | ID), data=d, algorithm = 'fullrank')
 ```
