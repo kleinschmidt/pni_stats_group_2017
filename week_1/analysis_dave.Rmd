@@ -275,13 +275,33 @@ use a function from the `Rmisc` package:
 # we won't `library(Rmisc)`: we're just using one function, and it loads `plyr`
 # which conflicts with dplyr.
 
-variables %>%
+d_summary_within_se <- 
+  variables %>%
   map(~ Rmisc::summarySEwithin(data=d,
                                measurevar= 'log_RT', 
                                withinvars=.x,
                                idvar='ID',
-                               na.rm=TRUE)) %>%
-  bind_rows() %>%
+                               na.rm=TRUE)) %T>%
+  print()
+
+```
+
+(The "tee pipe" `%T>%` lets you "split" the pipeline: it passes its left side
+to its right, and then passes it on unchanged.  This is handy for checking on
+intermediate values generated in the middle of a pipeline, or to print something
+before it gets assigned to a variable, like here)
+
+Now that we have the summaries with appropriate SEs, we can plot them in either
+of the ways we did above.  We can glue the individual summary dataframes
+together, `gather_` the grouping variable columns, and use `facet_grid` to
+arrange them into panels:
+
+```{r}
+
+d_summary_within_se %>%
+  # combine the resulting data frames together, rowwise, into one big df:
+  bind_rows() %T>% print() %>%
+  # gather the variables' columns to plot w ggplot:
   gather_('variable', 'val', gather_cols=variables, na.rm=TRUE) %>%
   ggplot(aes(x=val, y=log_RT, ymin=log_RT-ci, ymax=log_RT+ci)) +
   geom_pointrange() +
@@ -289,6 +309,20 @@ variables %>%
 
 ```
 
+Or we can generate individual `ggplot`s and use `grid.arrange` to glue them
+together.  The commplication here is that we need to transform the `ci` values
+into upper and lower CI limits before passing them to `ggplot`, because we need
+to use a string for the grouping variable:
+
+```{r}
+
+d_summary_within_se %>%
+  map(~ mutate(.x, ci_lo = log_RT-ci, ci_hi = log_RT+ci) %>%
+        ggplot(aes_string(x=colnames(.x)[1], y='log_RT', ymin='ci_lo', ymax='ci_hi')) +
+        geom_pointrange()) %>%
+  lift(gridExtra::grid.arrange, nrow=1)()
+
+```
 
 
 .
