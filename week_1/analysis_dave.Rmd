@@ -1,8 +1,28 @@
+---
+title: 'PNI R stats group: Week 1 (tidyverse edition)'
+author: Dave Kleinschmidt
+---
+
+This is a ["tidyverse"](https://blog.rstudio.org/2016/09/15/tidyverse-1-0-0/)
+version of [Mike's script](analysis_mike.Rmd) for loading, tidying, and
+visualizing Markus's data.  You should be able to run this analysis by cloning
+this repository, installing the necessary packages, and running it through
+Rmarkdown:
+
+```
+$ git clone https://github.com/kleinschmidt/pni_stats_group_2017.git
+$ cd pni_stats_group_2017/week_1
+$ Rscript -e "install.packages(c('tidyverse', 'rmarkdown', 'Rmisc')); rmarkdown::render('analysis_dave.Rmd')"
+```
+
+
 ```{r}
-## install.packages('tidyverse')
 library(tidyverse)
 library(forcats)
+library(magrittr)                       # for special pipes
 ```
+
+# Load and tidy
 
 The main data cleaning task is to convert categorical variables into factors and
 set contrasts on them.
@@ -36,6 +56,8 @@ d <- readr::read_csv(infile, col_names = columns) %>%
 
 summary(d)
 ```
+
+# Explore
 
 What's the data look like? Good place to start: just make a histogram of the RTs
 and log-RTs to see if anything looks funny.
@@ -76,8 +98,6 @@ d %>%
   arrange(log_RT)
 
 ```
-
-# Effects of different conditions
 
 Some figures! Since there is between-subject variation of within-subject
 effects, we don't want to just plot means and SEs computed from treating the
