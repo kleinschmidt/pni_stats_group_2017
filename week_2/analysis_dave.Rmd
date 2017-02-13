@@ -1,0 +1,63 @@
+```{r load-data}
+
+library(tidyverse)
+library(magrittr)                       # fancy pipes like %T>%
+
+# loads "d", the data_frame we generated last time
+d <- readr::read_rds('../data/batch2_33final-clean.rds')
+```
+
+# Specifying a statistical model
+
+In R, statistical models are commonly specified using a _formula_, which
+describes the relationship between _dependent_ (observed) variables on the
+left, and _independent_ variables (predictors) on the right.  This formula is
+then parsed by R and used to transform your data into a **model matrix**, which
+can be used to fit a regression model (etc.).
+
+```{r}
+
+d %>%
+  select(featureCorrelation, taskTransition, congruency) %>%
+  head() %>%
+  print()
+
+model.matrix(log_RT ~ featureCorrelation + taskTransition + congruency, d) %>%
+  head() %>%
+  print()
+
+```
+
+Note that there's one column per predictor, where categorical variables have
+been converted into numbers based on the contrasts we specified last week.
+There's also an `(Intercept)` column which is all ones, which allows us to model
+the constant, baseline `log_RT`.  The interpretation of the intercept
+_coefficient_ will depend on the contrasts we use for our categorical
+variables.  (Because our variables are all _sum_ coded, the intercept
+coefficient corresponds to the grand mean).
+
+# Fitting a simple linear regression
+
+The vast majority of modeling functions in R take a formula and a `data.frame`
+as input.  To fit a linear model:
+
+```{r}
+
+lm_fit <- lm(log_RT ~ featureCorrelation + taskTransition + congruency, d)
+
+summary(lm_fit)
+
+```
+
+# Fitting a mixed effects regression
+
+```{r}
+
+library(lme4)
+
+lmer_fit <- lmer(log_RT ~ featureCorrelation + taskTransition + congruency + (1|ID),
+                 d)
+
+summary(lmer_fit)
+
+```
