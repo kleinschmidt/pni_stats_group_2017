@@ -9,7 +9,7 @@ visualizing Markus's data.  You should be able to run this analysis by cloning
 this repository, installing the necessary packages, and running it through
 Rmarkdown:
 
-```
+```bash
 $ git clone https://github.com/kleinschmidt/pni_stats_group_2017.git
 $ cd pni_stats_group_2017/week_1
 $ Rscript -e "install.packages(c('tidyverse', 'rmarkdown', 'Rmisc')); rmarkdown::render('analysis_dave.Rmd')"
@@ -35,7 +35,7 @@ columns <- c("RT", "log_RT", "ID", "trial", "featureCorrelation",
              "taskTransition", "congruency", "correct", "task", "miniblock_all",
              "miniblock_n") 
 
-infile <- 'batch2_33final.csv'
+infile <- '../data/batch2_33final.csv'
 
 # a pipeable contrasts setter
 set_contrasts <- function(x, new_contr) {

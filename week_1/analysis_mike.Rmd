@@ -7,7 +7,7 @@ First, we load the data!
 
 ```{r}
 library(data.table)
-d <- fread('batch2_33final.csv')
+d <- fread('../data/batch2_33final.csv')
 colnames(d) <- c("RT","log_RT","ID", "trial", "featureCorrelation", "TaskTransition", "congruency", "correct", "task", "Miniblock_all", "Miniblock_n")
 summary(d)
 ```
