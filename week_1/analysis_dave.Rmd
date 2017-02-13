@@ -54,6 +54,9 @@ d <- readr::read_csv(infile, col_names = columns) %>%
   mutate_each(funs(set_contrasts(., c(-0.5, 0.5))),
               featureCorrelation, taskTransition, congruency)
 
+# save the cleaned data so we can use it later
+save(d, file='../data/batch2_33final-clean.RData')
+
 summary(d)
 ```
 
