@@ -272,7 +272,7 @@ ggplot(d_long, aes(x=val, y=log_RT)) +
 
 We can also write this as a big pipe:
 
-```{r, eval=FALSE]
+```{r, eval=FALSE}
 
 d %>%
   gather_(key='variable', value='val', gather_cols = variables) %>%
