@@ -55,7 +55,7 @@ d <- readr::read_csv(infile, col_names = columns) %>%
               featureCorrelation, taskTransition, congruency)
 
 # save the cleaned data so we can use it later
-save(d, file='../data/batch2_33final-clean.RData')
+readr::write_rds(d, '../data/batch2_33final-clean.rds')
 
 summary(d)
 ```
