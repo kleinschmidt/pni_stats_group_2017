@@ -1,0 +1,302 @@
+---
+title: "Markus Analysis (Tidyverse)"
+output: html_notebook
+---
+
+(This is Dave's [tidyverse](https://blog.rstudio.org/2016/09/15/tidyverse-1-0-0/) version of [Mike's analysis notebook](analysis_mike.Rmd).  It's as close to a direct translation as possible.)
+
+First, we load the data! 
+
+```{r}
+
+library(tidyverse)
+library(magrittr)
+library(forcats)
+
+columns <- c("RT", "log_RT", "ID", "trial", "featureCorrelation",
+             "taskTransition", "congruency", "correct", "task", "miniblock_all",
+             "miniblock_n") 
+
+infile <- '../data/batch2_33final.csv'
+
+d <- readr::read_csv(infile, col_names = columns)
+
+summary(d)
+```
+Convert things to factors that are factors: 
+
+```{r}
+
+# a pipeable contrasts setter
+set_contrasts <- function(x, new_contr) {
+  contrasts(x) <- new_contr
+  return(x)
+}
+
+d <- d %>%
+  mutate_each(funs(as.factor), featureCorrelation, taskTransition, congruency) %>%
+  mutate(featureCorrelation = fct_recode(featureCorrelation,
+                                         uncorrelated='0', correlated='1'),
+         taskTransition =     fct_recode(taskTransition,
+                                         noTransition='0', transition='1'),
+         congruency =         fct_recode(congruency,
+                                         incongruent='0', congruent='1')) %>%
+  mutate_each(funs(set_contrasts(., c(-0.5, 0.5))),
+              featureCorrelation, taskTransition, congruency)
+
+```
+
+# Data cleaning
+
+First thing we want to do, is sanity check our data. How about a histogram? 
+
+```{r}
+hist(d$RT)
+```
+
+Okay, this is very odd. We are seeing a spike of RTs right around 0. This should encourage us to look at the experiment code to verify there are no bugs. It could be that these are anticipatory responses, though I would expect those to be less of a spike right at 0. We can see whether all subjects show this: 
+
+```{r}
+ggplot(d, aes(x=RT)) + geom_histogram() + facet_wrap(~ID)
+```
+Ok, so very clearly this is not all subjects. We have subject 7 the occasional early guesser and subject 22 who really wanted to get out of the experiment. Is that right? We can verify by looking at the accuracy? 
+
+```{r}
+
+d %>%
+  filter(ID %in% c(7, 22)) %>%
+  group_by(ID) %>%
+  summarise(correct = mean(correct, na.rm=TRUE))
+
+d %>%
+  filter(! ID %in% c(7, 22)) %>%
+  summarise(correct = mean(correct, na.rm=TRUE))
+
+```
+Either everyone has accuracy below chance, or 'correct' actually codes errors. Fix that now: 
+
+```{r}
+
+# the %<>% pipe assigns the output of the following pipe to the input symbol.
+d %<>% mutate(correct = !correct)
+# this is equivalent to:
+# d <- d %>% mutate(correct = !correct)
+
+d %>% group_by(ID) %>%
+  summarise(correct = mean(correct, na.rm=TRUE)) %>%
+  arrange(correct) %T>%
+  print() %>%
+  mutate(bad = ID %in% c(7, 22)) %>%
+  group_by(bad) %>%
+  summarise(mean(correct), sd(correct))
+
+```
+Ok, so subject 22 is at chance performance (consistent with jamming the button to get out of the experiment as quickly as possible). Subject 7 is an occasional guesser but accuracy is sane, so probably worth keeping. This is also the sort of thing that is worth going back to one's experiment notes for (did you notice this when you were running the subject?). For now, remove him/her: 
+
+```{r}
+
+d %<>% filter(ID != 22)
+
+hist(d$RT)
+```
+
+Much better. This illustrates part of the reason that outlier removal is such a black art: if we did a cutoff on the whole population we would still keep higher RTs from this guessing subject, and remove fine RTs from other subjects. In the paper I wouldsay something like"one subject was excluded from analysis for failing to achieve better than chance performance". 
+
+At this point, one could also add a hard cutoff on the minimum RT. The important thing here is that guesses can happen at any time, so cutting off too aggressively can be problematic. A cutoff of 50ms will remove less than 1% of data, maybe okay here. 
+
+```{r}
+d %>% summarise(mean(RT < 0.05, na.rm=TRUE)) %>% print()
+
+d %<>% filter(RT >= 0.05)
+```
+
+Now we can plot some of our contrasts of interest. Since there is between-subject variation of within-subject effects, we don't want to just plot means and SEs computed from treating the whole dataset is i.i.d. But if we wanted to, here is one way to do this: 
+
+```{r}
+ggplot(d, aes(x=taskTransition, y=log_RT))  + stat_summary(fun.data="mean_cl_boot") 
+```
+
+We can do this for the inputs we care about. One way to do this with ggplot would be to reshape the data just right and use facet_wrap with scale=free. But reshape has never made sense to me, so here is an alternative:[^week1]
+
+[^week1]: See [Dave's notebook from last week](../week_1/analysis_dave.Rmd) for an explanation of this functional way of generating and putting these plots together.
+
+```{r}
+
+variables <- c('taskTransition', 'congruency', 'featureCorrelation')
+
+variables %>%
+  map(~ ggplot(d, aes_string(x=.x, y='log_RT')) +
+        geom_pointrange(stat='summary', fun.data='mean_cl_normal')) %>%
+  lift(gridExtra::grid.arrange, nrow=1)()
+```
+
+Now, a better way of making this figure would be to somehow take out between-subject variability. One way would be to use some ideas from ANOVA theory for this, using a method from Morey 2008: 
+
+```{r}
+
+variables %>%
+  map(~ Rmisc::summarySEwithin(data=d,
+                               measurevar= 'log_RT', 
+                               withinvars=.x,
+                               idvar='ID',
+                               na.rm=TRUE) %>%
+        mutate(.x, ci_lo = log_RT-ci, ci_hi = log_RT+ci) %>%
+        ggplot(aes_string(x=.x, y='log_RT', ymin='ci_lo', ymax='ci_hi')) +
+        geom_pointrange()) %>%
+  lift(gridExtra::grid.arrange, nrow=1)()
+
+```
+
+Now for stats. First we do the naive thing of a single regression for all the subjects: 
+
+```{r}
+
+# (a + b + ...)^2 means all main effects and 2-way interactions of a, b, ..., so
+# the above formula is a more concise version of:
+# log_RT ~ trial + taskTransition + congruency + featureCorrelation +
+#   taskTransition:congruency + taskTransition:featureCorrelation +
+#   congruency:featureCorrelation
+f <- log_RT ~ trial + (taskTransition + congruency + featureCorrelation)^2
+
+mNaiveRegression <- lm(f, data=d)
+
+summary(mNaiveRegression)
+# library(stargazer)
+# stargazer(mNaiveRegression)
+```
+
+If we inspect residuals... 
+```{r}
+
+d_with_resid <- 
+  d %>% 
+  modelr::add_residuals(mNaiveRegression) %>%
+  mutate(n = row_number()) 
+
+ggplot(d_with_resid, aes(x=n, y=resid)) +
+  geom_point() + 
+  geom_hline(yintercept=0)
+
+```
+
+This should not be surprising: we are fitting some subjects better, and some worse. Since the data appears sorted by subject, we can add separator lines and we will see that the residuals are off in a subject-specific way: 
+
+```{r}
+# adding the residuals to teh original data from with modelr::add_residuals lets
+# us use the full power of ggplot to explore the model fit:
+d_with_resid %>%
+  ggplot(aes(x=n, y=resid)) +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  facet_wrap(~ID, scales='free_x')
+```
+
+So this was one giant subject. What about if we did the regressions separate for each subject?[^tidy-models]
+
+```{r}
+d %>%
+  group_by(ID) %>%
+  do(lm(data=., formula=formula(mNaiveRegression)) %>% broom::tidy()) %T>% 
+  print() %>%
+  group_by(term) %>%
+  do(t.test(.$estimate) %>% broom::tidy())
+```
+
+[^tidy-models]: (Two things are happening here.  First, we're using `dplyr::do`
+    to perform arbitrary computations on a `data_frame` in a pipeline.  The
+    argument to `do` should be an expression where any instances of the dot
+    (`.`) will be replaced with the input data.  That expression should evaluate
+    to a `data_frame` itself.  If there are any groups, then the expression will
+    be evaluated on each group individually and the output will be glued back
+    together with the grouping columns added (`ID`, in this case).  Second,
+    `broom::tidy` creates a consistently formatted model summary (in the form of
+    a `data_frame`) for many different model types.  We use it to clean up the
+    output of `lm` and `t.test` so that it can be valid output for `do`.  It's
+    the secret sauce that makes models "tidy" to play well with the rest of the
+    tidyverse.)
+
+Now, proper linear mixed models. First we just do a model with different intercepts by subject:
+
+```{r}
+library(lme4)
+
+lmmInterceptsOnly <- lmer(update(formula(mNaiveRegression), ~ . + (1|ID)),
+                          data = d)
+
+print(summary(lmmInterceptsOnly), corr=F)
+
+d_with_resid %<>%
+  modelr::add_residuals(lmmInterceptsOnly, var='lmm_resid') 
+
+d_with_resid %>%
+  ggplot(aes(x=n, y=lmm_resid)) +
+  geom_point()
+```
+
+```{r}
+d_with_resid %>%
+  ggplot(aes(x=n, y=lmm_resid)) +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  facet_wrap(~ID, scales='free_x')
+```
+
+Confidence intervals and p values get challenging here because the degrees of freedom are not defined. Instead, we can make an asymptotic gaussian approximation, use an approximation for the degrees of freedom (Satterhwaite or Kenward-Roger), or bootstrap: 
+
+```{r}
+confint(lmmInterceptsOnly, method='Wald') # asymptotic gaussian, least conservative
+# confint(lmmInterceptsOnly, method='boot') # bootstrapped, v. slow
+```
+
+In this model, we assume subjects have different baselines, but the same coefficients. But maybe our subjects respond differently to our manipulation? We can try to estimate a model for subject-specific perturbations of all the slopes:
+
+```{r, cache=TRUE}
+
+lmmSlopes <- lmer(log_RT ~ 1 + (taskTransition + congruency + featureCorrelation)^2 +
+                    (1 + (taskTransition + congruency + featureCorrelation)^2 | ID),
+                  data = d)
+
+lmmSlopes %>%
+  summary(corr=FALSE) %>%
+  print()
+
+confint(lmmSlopes, method='Wald')
+
+```
+
+```{r}
+
+d_with_resid %<>% modelr::add_residuals(lmmSlopes, var='lmm_slope_resid')
+
+d_with_resid %>%
+  ggplot(aes(x=n, y=lmm_slope_resid)) +
+  geom_point()
+```
+
+```{r}
+d_with_resid %>%
+  ggplot(aes(x=n, y=lmm_slope_resid)) +
+  geom_point() +
+  geom_hline(yintercept=0) +
+  facet_wrap(~ID, scales='free_x')
+```
+
+The difference between this and the intercepts-only model is telling us that some subjects are driving our effects by themselves. 
+
+```{r}
+subjPerturbations <- ranef(lmmSlopes)$ID
+for (effect in colnames(subjPerturbations[2:7])){
+  hist(subjPerturbations[[effect]], main=effect)
+}
+```
+
+Of course, these frequentist statistics are making claims like "across N replications of the experiment, if the population mean is 0, here is how frequently we expect to see this sample mean." But this is not what I care about. First, because the null of "effect is 0.0001" isn't that much more interesting than the null of "effect is zero" -- zero is not special. Second, because I want to make claims like "in the true population, the effect size is at least X with probability Y". That brings us to Bayesian inference: 
+
+```{r eval=FALSE}
+library(rstanarm)
+options(mc.cores = parallel::detectCores())
+lmmSlopesBayesian <- stan_lmer(formula(lmmSlopes), data=d, QR=TRUE, iter=2000, chains=3)
+summary(lmmSlopesBayesian, pars='beta')
+plot(lmmSlopesBayesian, pars='beta')
+pp_check(lmmSlopesBayesian, nreps=20)
+```
