@@ -199,9 +199,27 @@ stargazer(glm_diff, glm_diff_ratio, glmer_diff, glmer_diff_ratio, type='text')
 
 ## Individual indifference points
 
-```{r}
+We can extract the individual subjects' Best Unbiased Linear Predictors (BLUPS) to get an estimate of their individual point.  We use the fact that probability of 0.5 is log-odds of 0, and that $y=mx + b$ and $y=0$ gives us $x = -b/x$, or negative intercept divided by slope.  Let's extract these and then add them to the by-subject plot we created before, along with the best guess about the overall (fixed effects) indifference point.
 
-broom::tidy(glmer_diff_ratio)
+```{r, fig.width=10, fig.height=10}
+
+glmer_diff_ratio %>% coef() %>% `[[`(1) %>% rownames_to_column(var='subID') %>% 
+  mutate(diff_indifference = -`(Intercept)` / diffWRtoCN,
+         subID = as.integer(subID)) %>%
+  select(subID, diff_indifference) ->
+  indifference_points
+
+glmer_diff_ratio %>%
+  fixef %>% as.list() %>% as_data_frame() %>%
+  mutate(diff_indifference = -`(Intercept)` / diffWRtoCN) ->
+  fixef_indifference_points
+
+p_diff_by_subj + 
+  geom_vline(aes(xintercept = diff_indifference), data=indifference_points) +
+  geom_vline(aes(xintercept = diff_indifference), data=fixef_indifference_points, linetype=2) +
+  # restrict the x limits because some people have wacky indifference points
+  lims(x=c(min(d$diffWRtoCN), max(d$diffWRtoCN)))
+
 
 ```
 
