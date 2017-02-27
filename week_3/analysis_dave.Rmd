@@ -1,0 +1,140 @@
+```{r}
+library(tidyverse)
+library(magrittr)
+```
+
+First thing we do is read in the data and convert things to a useful format.  Make sure you've downloaded the data file to the `../data/` directory.
+
+```{r}
+d_full <- readr::read_csv('../data/STRDST_RDiff_112216.csv') %T>% print()
+```
+
+For this analysis, we're just interested in the decisions themselves (`DV_choice`), as a function of the number of color naming or word reading trials offered (specifically, their difference or ratio).  The `DV_choice` column is our dependent variable, whether the subject chose the color naming option (0) or the word reading option (1).  We'll just pull out the variables we need for this analysis, renaming things to fix typos and clarify the coding of the dependent variable:
+
+```{r}
+
+d <- d_full %>%
+  select(subID,
+         decisionTrial = desiciontrial,
+         CNoffered,
+         WRoffered,
+         chooseWR = DV_choice,
+         Ratio,
+         Difference) %>%
+  mutate(ratioWRtoCN = WRoffered / CNoffered,
+         diffWRtoCN = WRoffered - CNoffered) %T>%
+  print()
+
+```
+
+It seems like the ratio column doesn't match the manually calulated ratio:
+
+```{r}
+
+ggplot(d, aes(x=Ratio, y=ratioWRtoCN)) + geom_point() + geom_abline()
+
+```
+
+Let's also look at how collinear the difference and ratio variables are:
+
+```{r}
+
+ggplot(d, aes(x=ratioWRtoCN, y=diffWRtoCN)) + geom_point()
+
+```
+They're pretty collinear, but not perfectly, so we migth be able to get some leverage.  We might also want to look at the range and distribution of ratios and differences:
+
+```{r}
+
+d %>%
+  gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
+  ggplot(aes(x=value)) +
+  geom_histogram() +
+  facet_grid(.~indepVar, scales='free_x')
+
+```
+
+
+Now let's look at the dependent variable as a function of these:
+
+```{r}
+
+d %>%
+  gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
+  group_by(value, indepVar, chooseWR) %>%
+  tally() %>%
+  ggplot(aes(x=value, y=chooseWR)) + geom_point(position='jitter') + facet_grid(.~indepVar)
+
+```
+
+Hard to see with the overplotting.
+
+```{r}
+
+d %>%
+  gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
+  ggplot(aes(x=value, y=chooseWR)) +
+  geom_count() +
+  geom_line(stat='summary', fun.y=mean) +
+  facet_grid(.~indepVar, scales='free_x')
+
+```
+
+Add lines by subject:
+
+```{r}
+
+
+d %>%
+  gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
+  ggplot(aes(x=value, y=chooseWR)) +
+  geom_count() +
+  geom_line(aes(group=subID), stat='summary', fun.y=mean) +
+  facet_grid(.~indepVar, scales='free_x')
+
+```
+
+That's a mess, but might be able to get something cleaner if we use a parametric smoother like a glm fit:
+
+```{r}
+
+
+d %>%
+  gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
+  ggplot(aes(x=value, y=chooseWR)) +
+  geom_count() +
+  stat_smooth(aes(group=subID), geom='line', method='glm', method.args=list(family='binomial')) +
+  facet_grid(.~indepVar, scales='free_x')
+
+```
+
+Now we're getting something interesting!  We can see that some subjects basically are indifferent (or guessing), and others migth even be _backwards_.  We possibly can get a clearer view by plotting individual subjects alone:
+
+```{r, fig.width=10, fig.height=10}
+
+d %>%
+  ggplot(aes(x=diffWRtoCN, y=chooseWR)) +
+  geom_count(shape=1) +
+  stat_smooth(aes(group=subID), geom='line', color='red',
+              method='glm', method.args=list(family='binomial')) +
+  facet_wrap(~subID)
+
+```
+
+And for ratio:
+
+```{r, fig.width=10, fig.height=10}
+
+d %>%
+  ggplot(aes(x=ratioWRtoCN, y=chooseWR)) +
+  geom_count(shape=1) +
+  stat_smooth(aes(group=subID), geom='line', color='red',
+              method='glm', method.args=list(family='binomial')) +
+  facet_wrap(~subID)
+```
+
+What this suggests to me is that there's quite a bit of individual subject variability, in terms of _where_ their point of indifference is but also how sensitive they are to the difference/ratio manipulation.
+
+# Regression models
+
+There are a few questions we want to answer with regression.  First, we want to some sense of whether the difference or ratio better describes subjects' preferences.  Second, we want to get some estimate of individual subjects' indifference points.
