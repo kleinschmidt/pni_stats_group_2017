@@ -11,7 +11,7 @@ library(magrittr)
 First thing we do is read in the data and convert things to a useful format.  Make sure you've downloaded the data file to the `../data/` directory.
 
 ```{r}
-d_full <- readr::read_csv('../data/STRDST_RDiff_112216.csv') %T>% print()
+d_full <- readr::read_csv('../data/STRDST_RDiff_112216.csv', na = 'NaN') %T>% print()
 ```
 
 For this analysis, we're just interested in the decisions themselves (`DV_choice`), as a function of the number of color naming or word reading trials offered (specifically, their difference or ratio).  The `DV_choice` column is our dependent variable, whether the subject chose the color naming option (0) or the word reading option (1).  We'll just pull out the variables we need for this analysis, renaming things to fix typos and clarify the coding of the dependent variable:
@@ -26,8 +26,9 @@ d <- d_full %>%
          chooseWR = DV_choice,
          Ratio,
          Difference) %>%
-  mutate(ratioWRtoCN = ifelse(WRoffered == 0 & CNoffered == 0, 1, WRoffered / CNoffered),
-         diffWRtoCN = WRoffered - CNoffered) %T>%
+  filter(WRoffered != 0) %>%            # remove catch trials
+  mutate(ratioWRtoCN = WRoffered / CNoffered,
+         diffWRtoCN  = WRoffered - CNoffered) %T>%
   print()
 
 ```
@@ -80,7 +81,8 @@ d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   ggplot(aes(x=value, y=chooseWR)) +
   geom_count() +
-  geom_line(stat='summary', fun.y=mean) +
+  #geom_line(stat='summary', fun.y=mean) +
+  stat_summary(geom='line', fun.y=mean) +
   facet_grid(.~indepVar, scales='free_x')
 
 ```
@@ -120,7 +122,10 @@ d %>%
   geom_count(shape=1) +
   stat_smooth(aes(group=subID), geom='line', color='red',
               method='glm', method.args=list(family='binomial')) +
-  facet_wrap(~subID)
+  facet_wrap(~subID) ->
+  p_diff_by_subj
+
+p_diff_by_subj
 
 ```
 
@@ -167,6 +172,7 @@ The model using difference has a lower deviance, and hence a better fit to the d
 ```{r}
 glm_diff_ratio <- glm(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN, data=d, family='binomial')
 summary(glm_diff_ratio)
+car::vif(glm_diff_ratio)
 ```
 ```{r}
 anova(glm_diff, glm_diff_ratio, test='Chisq')
@@ -176,14 +182,19 @@ So even though diff explains the data best, ratio still contriubtes something.
 
 ```{r}
 library(lme4)
+glmer_diff <- glmer(chooseWR ~ 1 + diffWRtoCN + (1 + diffWRtoCN | subID),
+                          data = d, family = 'binomial')
 glmer_diff_ratio <- glmer(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN + (1 + diffWRtoCN | subID),
                           data = d, family = 'binomial')
 summary(glmer_diff_ratio)
+summary(glmer_diff)
+
+anova(glmer_diff, glmer_diff_ratio)
 ```
 
 ```{r}
 library(stargazer)
-stargazer(glm_diff, glm_diff_ratio, glmer_diff_ratio, type='text')
+stargazer(glm_diff, glm_diff_ratio, glmer_diff, glmer_diff_ratio, type='text')
 ```
 
 ## Individual indifference points
