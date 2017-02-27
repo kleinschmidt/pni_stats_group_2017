@@ -7,6 +7,7 @@ First, we load the data!
 
 ```{r}
 library(data.table)
+library(ggplot2)
 d <- fread('../data/batch2_33final.csv', na.strings="NaN")
 colnames(d) <- c("RT","log_RT","ID", "trial", "featureCorrelation", "TaskTransition", "congruency", "correct", "task", "Miniblock_all", "Miniblock_n")
 summary(d)
@@ -38,7 +39,7 @@ hist(d$RT)
 Okay, this is very odd. We are seeing a spike of RTs right around 0. This should encourage us to look at the experiment code to verify there are no bugs. It could be that these are anticipatory responses, though I would expect those to be less of a spike right at 0. We can see whether all subjects show this: 
 
 ```{r}
-p <- ggplot(d, aes(x=RT)) + geom_histogram() + facet_wrap(~ID)
+p <- ggplot(d, aes(x=log(RT))) + geom_histogram() + facet_wrap(~ID)
 print(p)
 ```
 Ok, so very clearly this is not all subjects. We have subject 7 the occasional early guesser and subject 22 who really wanted to get out of the experiment. Is that right? We can verify by looking at the accuracy? 
@@ -56,13 +57,15 @@ d[,correct:=mapvalues(correct,from=c(0,1), to=c(1,0))]
 d[ID==22,mean(correct, na.rm=T)]
 d[ID==7,mean(correct, na.rm=T)]
 d[!(ID  %in% c(7,22)),mean(correct, na.rm=T)]
-d[!(ID  %in% c(7,22)),sd(correct, na.rm=T)]
+meanAccBySubj <- d[,mean(correct,na.rm=T),by="ID"]
+sd(meanAccBySubj$V1)
 ```
 Ok, so subject 22 is at chance performance (consistent with jamming the button to get out of the experiment as quickly as possible). Subject 7 is an occasional guesser but accuracy is sane, so probably worth keeping. This is also the sort of thing that is worth going back to one's experiment notes for (did you notice this when you were running the subject?). For now, remove him/her: 
 
 ```{r}
 d <- d[ID!=22]
 hist(d$RT)
+hist(d$log_RT)
 ```
 
 Much better. This illustrates part of the reason that outlier removal is such a black art: if we did a cutoff on the whole population we would still keep higher RTs from this guessing subject, and remove fine RTs from other subjects. In the paper I wouldsay something like"one subject was excluded from analysis for failing to achieve better than chance performance". 
@@ -77,7 +80,6 @@ d <- d[RT>0.05]
 Now we can plot some of our contrasts of interest. Since there is between-subject variation of within-subject effects, we don't want to just plot means and SEs computed from treating the whole dataset is i.i.d. But if we wanted to, here is one way to do this: 
 
 ```{r}
-library(ggplot2)
 p <- ggplot(d, aes(x=TaskTransition, y=log_RT))  + stat_summary(fun.data="mean_cl_boot") 
 p
 ```
@@ -112,13 +114,16 @@ Now for stats. First we do the naive thing of a single regression for all the su
 ```{r}
 mNaiveRegression <- lm(log_RT ~ trial + TaskTransition + congruency + featureCorrelation + TaskTransition:congruency + TaskTransition:featureCorrelation + congruency:featureCorrelation, data=d)
 summary(mNaiveRegression)
-# library(stargazer)
-# stargazer(mNaiveRegression)
+library(stargazer)
+stargazer(mNaiveRegression, type='text')
 ```
 
 If we inspect residuals... 
 ```{r}
-plot(resid(mNaiveRegression))
+mNaiveRegression_untransformed <- lm(RT ~ trial + TaskTransition + congruency + featureCorrelation + TaskTransition:congruency + TaskTransition:featureCorrelation + congruency:featureCorrelation, data=d)
+qqPlot(resid(mNaiveRegression_untransformed))
+qqPlot(resid(mNaiveRegression))
+# plot(resid(mNaiveRegression))
 ```
 
 This should not be surprising: we are fitting some subjects better, and some worse. Since the data appears sorted by subject, we can add separator lines and we will see that the residuals are off in a subject-specific way: 
