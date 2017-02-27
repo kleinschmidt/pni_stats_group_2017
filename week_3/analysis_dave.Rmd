@@ -1,4 +1,9 @@
+---
+output: html_notebook
+---
+
 ```{r}
+
 library(tidyverse)
 library(magrittr)
 ```
@@ -21,7 +26,7 @@ d <- d_full %>%
          chooseWR = DV_choice,
          Ratio,
          Difference) %>%
-  mutate(ratioWRtoCN = WRoffered / CNoffered,
+  mutate(ratioWRtoCN = ifelse(WRoffered == 0 & CNoffered == 0, 1, WRoffered / CNoffered),
          diffWRtoCN = WRoffered - CNoffered) %T>%
   print()
 
@@ -63,11 +68,11 @@ d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   group_by(value, indepVar, chooseWR) %>%
   tally() %>%
-  ggplot(aes(x=value, y=chooseWR)) + geom_point(position='jitter') + facet_grid(.~indepVar)
+  ggplot(aes(x=value, y=chooseWR)) + geom_point() + facet_grid(.~indepVar)
 
 ```
 
-Hard to see with the overplotting.
+Hard to see with the overplotting, we can use geom_count to group together same-value observations.
 
 ```{r}
 
@@ -80,10 +85,9 @@ d %>%
 
 ```
 
-Add lines by subject:
+Let's see how things break down by subject.  First try I did was to just add lines by subject:
 
 ```{r}
-
 
 d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
@@ -98,7 +102,6 @@ That's a mess, but might be able to get something cleaner if we use a parametric
 
 ```{r}
 
-
 d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   ggplot(aes(x=value, y=chooseWR)) +
@@ -108,7 +111,7 @@ d %>%
 
 ```
 
-Now we're getting something interesting!  We can see that some subjects basically are indifferent (or guessing), and others migth even be _backwards_.  We possibly can get a clearer view by plotting individual subjects alone:
+Now we're getting something interesting!  We can see that some subjects basically are indifferent (or guessing), and others might even be _backwards_.  We possibly can get a clearer view by plotting individual subjects alone:
 
 ```{r, fig.width=10, fig.height=10}
 
@@ -138,3 +141,56 @@ What this suggests to me is that there's quite a bit of individual subject varia
 # Regression models
 
 There are a few questions we want to answer with regression.  First, we want to some sense of whether the difference or ratio better describes subjects' preferences.  Second, we want to get some estimate of individual subjects' indifference points.
+
+## Difference or ratio?
+
+We can use a _likelihood ratio test_ to compare how well ratio and difference explain choices.
+
+```{r}
+
+glm_ratio <- glm(chooseWR ~ 1 + ratioWRtoCN, data=d, family='binomial')
+summary(glm_ratio)
+
+```
+
+```{r}
+glm_diff <- glm(chooseWR ~ 1 + diffWRtoCN, data=d, family='binomial')
+summary(glm_diff)
+```
+
+```{r}
+anova(glm_diff, glm_ratio)
+```
+
+The model using difference has a lower deviance, and hence a better fit to the data.  This suggests that difference better explains choice.  We can additionally ask if adding ratio _on top of_ difference explains anything else about the data
+
+```{r}
+glm_diff_ratio <- glm(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN, data=d, family='binomial')
+summary(glm_diff_ratio)
+```
+```{r}
+anova(glm_diff, glm_diff_ratio, test='Chisq')
+```
+
+So even though diff explains the data best, ratio still contriubtes something.
+
+```{r}
+library(lme4)
+glmer_diff_ratio <- glmer(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN + (1 + diffWRtoCN | subID),
+                          data = d, family = 'binomial')
+summary(glmer_diff_ratio)
+```
+
+```{r}
+library(stargazer)
+stargazer(glm_diff, glm_diff_ratio, glmer_diff_ratio, type='text')
+```
+
+## Individual indifference points
+
+```{r}
+
+broom::tidy(glmer_diff_ratio)
+
+```
+
