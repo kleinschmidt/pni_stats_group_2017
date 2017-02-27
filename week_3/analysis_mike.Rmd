@@ -1,0 +1,105 @@
+---
+title: "PNI Stats group week 3"
+author: "Mike Shvartsman"
+date: "2/27/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(ggplot2)
+library(Rmisc)
+library(lme4)
+```
+Load: 
+
+```{r}
+setwd('~/Box Sync/Research/analysis software/pni_stats_group_2017/week_3/')
+d <- fread('../data/STRDST_RDiff_112216.csv', na.strings = "NaN")
+summary(d)
+```
+
+```{r}
+hist(d$DV_choiceRT)
+```
+
+Ok, that is odd. We have some RT that is 216 seconds? Trim to 10s (which is still super long, right?). Also notice that there are a few 0 RTs, probably not real either. 
+
+```{r}
+hist(d[DV_choiceRT<10000][DV_choiceRT>1]$DV_choiceRT)
+nrow(d[DV_choiceRT<10000][DV_choiceRT>1])/nrow(d)
+d <- d[DV_choiceRT<10000][DV_choiceRT>1]
+```
+
+Let's look at log RT for now -- just a shorthand for handling the skew: 
+```{r}
+d[,logRT:=log(DV_choiceRT)]
+hist(d$logRT)
+```
+
+Now let's look at what these effects might look like: 
+```{r}
+dSumWithin_ratio <- summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("Ratio"), idvar="SUBJ", na.rm=T)
+dSumWithin_ratio <- dSumWithin_ratio[!is.na(dSumWithin_ratio$Ratio),]
+p <- ggplot(dSumWithin_ratio, aes(x=Ratio, y=logRT, ymin=logRT-se, ymax=logRT+se)) + geom_pointrange()
+print(p)
+d[,absDiff:=abs(Difference)]
+dSumWithin_difference = summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("absDiff"), idvar="SUBJ", na.rm=T)
+p <- ggplot(dSumWithin_difference, aes(x=absDiff, y=logRT, ymin=logRT-se, ymax=logRT+se)) + geom_pointrange()
+print(p)
+```
+
+Huge difference between ratio and difference, right? One is a lot cleaner as far as trends go -- but also, big differences in amount of data in each. We can bin the differences into the same number of bins just to ballpark this: 
+
+```{r}
+d[,diffBinned:=cut(absDiff, breaks=8)]
+dSumWithin_diffBinned = summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("diffBinned"), idvar="SUBJ", na.rm=T)
+p <- ggplot(dSumWithin_diffBinned, aes(x=diffBinned, y=logRT, ymin=logRT-se, ymax=logRT+se)) + geom_pointrange()
+print(p)
+```
+
+A much cleaner trend now. You would think that the thing happening at `(0,2]` is a special effect of 0 but we saw above it's actually a difference of 1. We can also look at the effect of total number of trials, which (together with ratio) might get us an incredibly close proxy to difference. Should also exclude when 0 is offered (what does that mean?)
+
+```{r}
+d[,totalOffered:=CNoffered+WRoffered]
+d <- d[totalOffered>0]
+dSumWithin_total = summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("totalOffered"), idvar="SUBJ", na.rm=T)
+p <- ggplot(dSumWithin_total, aes(x=totalOffered, y=logRT, ymin=logRT-se, ymax=logRT+se)) + geom_pointrange()
+print(p)
+```
+
+Pretty clean effect here: if you offer me more trials, I'm slower. Does this interact with the difference and ratio measures? 
+
+```{r}
+d[,totalOffered_binned:=cut(totalOffered,breaks=4)]
+d <- d[totalOffered!=0]
+dSumWithin_ratio_wTotal = summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("Ratio","totalOffered_binned"), idvar="SUBJ", na.rm=T) 
+dSumWithin_ratio_wTotal[!is.na(dSumWithin_ratio_wTotal$Ratio),]
+p <- ggplot(dSumWithin_ratio_wTotal, aes(x=Ratio, y=logRT, ymin=logRT-se, ymax=logRT+se, group=totalOffered_binned, colour=totalOffered_binned)) + geom_pointrange(position = position_dodge(width=1.1)) + facet_wrap(~totalOffered_binned)
+print(p)
+```
+
+To me this looks like if the difference is large enough, there's not much of an effect of ratio -- but in the middle, higher ratio mean faster decisions. Nice. How about diff? 
+
+```{r}
+dSumWithin_difference_wTotal = summarySEwithin(as.data.frame(d), measurevar="logRT", withinvars=c("absDiff","totalOffered_binned"), idvar="SUBJ", na.rm=T)
+p <- ggplot(dSumWithin_difference_wTotal, aes(x=absDiff, y=logRT, ymin=logRT-se, ymax=logRT+se, group=totalOffered_binned, colour=totalOffered_binned)) + geom_pointrange(position = position_dodge(width=1.1)) + facet_wrap(~totalOffered_binned)
+print(p)
+```
+
+Looks less clean, honestly. To me, the best story based on just these figures seems to be that at high amounts, there's some sort of knee-jerk response to just avoid the large number, and at smaller amounts there's consideration of the ratio. If that's true, we should predict that the effect of total on choice made should be nonlinear. Let's take a look: 
+
+```{r}
+dSumWithin_total_choice = summarySEwithin(as.data.frame(d), measurevar="DV_choice", withinvars=c("totalOffered_binned"), idvar="SUBJ", na.rm=T)
+p <- ggplot(dSumWithin_total_choice, aes(x=totalOffered_binned, y=DV_choice, ymin=DV_choice-se, ymax=DV_choice+se)) + geom_pointrange()
+print(p)
+```
+
+Yep! Now we can take a look at how that interacts with ratio and difference: 
+
+```{r}
+dSumWithin_ratio_wTotal_choice = summarySEwithin(as.data.frame(d), measurevar="DV_choice", withinvars=c("Ratio","totalOffered_binned"), idvar="SUBJ", na.rm=T) 
+dSumWithin_ratio_wTotal_choice[!is.na(dSumWithin_ratio_wTotal$Ratio),]
+p <- ggplot(dSumWithin_ratio_wTotal_choice, aes(x=Ratio, y=DV_choice, ymin=DV_choice-se, ymax=DV_choice+se, group=totalOffered_binned, colour=totalOffered_binned)) + geom_pointrange(position = position_dodge(width=1.1)) + facet_wrap(~totalOffered_binned)
+print(p)
+```
