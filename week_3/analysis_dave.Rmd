@@ -1,4 +1,9 @@
+---
+output: html_notebook
+---
+
 ```{r}
+
 library(tidyverse)
 library(magrittr)
 ```
@@ -6,7 +11,7 @@ library(magrittr)
 First thing we do is read in the data and convert things to a useful format.  Make sure you've downloaded the data file to the `../data/` directory.
 
 ```{r}
-d_full <- readr::read_csv('../data/STRDST_RDiff_112216.csv') %T>% print()
+d_full <- readr::read_csv('../data/STRDST_RDiff_112216.csv', na = 'NaN') %T>% print()
 ```
 
 For this analysis, we're just interested in the decisions themselves (`DV_choice`), as a function of the number of color naming or word reading trials offered (specifically, their difference or ratio).  The `DV_choice` column is our dependent variable, whether the subject chose the color naming option (0) or the word reading option (1).  We'll just pull out the variables we need for this analysis, renaming things to fix typos and clarify the coding of the dependent variable:
@@ -21,8 +26,9 @@ d <- d_full %>%
          chooseWR = DV_choice,
          Ratio,
          Difference) %>%
+  filter(WRoffered != 0) %>%            # remove catch trials
   mutate(ratioWRtoCN = WRoffered / CNoffered,
-         diffWRtoCN = WRoffered - CNoffered) %T>%
+         diffWRtoCN  = WRoffered - CNoffered) %T>%
   print()
 
 ```
@@ -63,11 +69,11 @@ d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   group_by(value, indepVar, chooseWR) %>%
   tally() %>%
-  ggplot(aes(x=value, y=chooseWR)) + geom_point(position='jitter') + facet_grid(.~indepVar)
+  ggplot(aes(x=value, y=chooseWR)) + geom_point() + facet_grid(.~indepVar)
 
 ```
 
-Hard to see with the overplotting.
+Hard to see with the overplotting, we can use geom_count to group together same-value observations.
 
 ```{r}
 
@@ -75,15 +81,15 @@ d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   ggplot(aes(x=value, y=chooseWR)) +
   geom_count() +
-  geom_line(stat='summary', fun.y=mean) +
+  #geom_line(stat='summary', fun.y=mean) +
+  stat_summary(geom='line', fun.y=mean) +
   facet_grid(.~indepVar, scales='free_x')
 
 ```
 
-Add lines by subject:
+Let's see how things break down by subject.  First try I did was to just add lines by subject:
 
 ```{r}
-
 
 d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
@@ -98,7 +104,6 @@ That's a mess, but might be able to get something cleaner if we use a parametric
 
 ```{r}
 
-
 d %>%
   gather(indepVar, value, diffWRtoCN, ratioWRtoCN) %>%
   ggplot(aes(x=value, y=chooseWR)) +
@@ -108,7 +113,7 @@ d %>%
 
 ```
 
-Now we're getting something interesting!  We can see that some subjects basically are indifferent (or guessing), and others migth even be _backwards_.  We possibly can get a clearer view by plotting individual subjects alone:
+Now we're getting something interesting!  We can see that some subjects basically are indifferent (or guessing), and others might even be _backwards_.  We possibly can get a clearer view by plotting individual subjects alone:
 
 ```{r, fig.width=10, fig.height=10}
 
@@ -117,7 +122,10 @@ d %>%
   geom_count(shape=1) +
   stat_smooth(aes(group=subID), geom='line', color='red',
               method='glm', method.args=list(family='binomial')) +
-  facet_wrap(~subID)
+  facet_wrap(~subID) ->
+  p_diff_by_subj
+
+p_diff_by_subj
 
 ```
 
@@ -138,3 +146,80 @@ What this suggests to me is that there's quite a bit of individual subject varia
 # Regression models
 
 There are a few questions we want to answer with regression.  First, we want to some sense of whether the difference or ratio better describes subjects' preferences.  Second, we want to get some estimate of individual subjects' indifference points.
+
+## Difference or ratio?
+
+We can use a _likelihood ratio test_ to compare how well ratio and difference explain choices.
+
+```{r}
+
+glm_ratio <- glm(chooseWR ~ 1 + ratioWRtoCN, data=d, family='binomial')
+summary(glm_ratio)
+
+```
+
+```{r}
+glm_diff <- glm(chooseWR ~ 1 + diffWRtoCN, data=d, family='binomial')
+summary(glm_diff)
+```
+
+```{r}
+anova(glm_diff, glm_ratio)
+```
+
+The model using difference has a lower deviance, and hence a better fit to the data.  This suggests that difference better explains choice.  We can additionally ask if adding ratio _on top of_ difference explains anything else about the data
+
+```{r}
+glm_diff_ratio <- glm(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN, data=d, family='binomial')
+summary(glm_diff_ratio)
+car::vif(glm_diff_ratio)
+```
+```{r}
+anova(glm_diff, glm_diff_ratio, test='Chisq')
+```
+
+So even though diff explains the data best, ratio still contriubtes something.
+
+```{r}
+library(lme4)
+glmer_diff <- glmer(chooseWR ~ 1 + diffWRtoCN + (1 + diffWRtoCN | subID),
+                          data = d, family = 'binomial')
+glmer_diff_ratio <- glmer(chooseWR ~ 1 + diffWRtoCN + ratioWRtoCN + (1 + diffWRtoCN | subID),
+                          data = d, family = 'binomial')
+summary(glmer_diff_ratio)
+summary(glmer_diff)
+
+anova(glmer_diff, glmer_diff_ratio)
+```
+
+```{r}
+library(stargazer)
+stargazer(glm_diff, glm_diff_ratio, glmer_diff, glmer_diff_ratio, type='text')
+```
+
+## Individual indifference points
+
+We can extract the individual subjects' Best Unbiased Linear Predictors (BLUPS) to get an estimate of their individual point.  We use the fact that probability of 0.5 is log-odds of 0, and that $y=mx + b$ and $y=0$ gives us $x = -b/x$, or negative intercept divided by slope.  Let's extract these and then add them to the by-subject plot we created before, along with the best guess about the overall (fixed effects) indifference point.
+
+```{r, fig.width=10, fig.height=10}
+
+glmer_diff_ratio %>% coef() %>% `[[`(1) %>% rownames_to_column(var='subID') %>% 
+  mutate(diff_indifference = -`(Intercept)` / diffWRtoCN,
+         subID = as.integer(subID)) %>%
+  select(subID, diff_indifference) ->
+  indifference_points
+
+glmer_diff_ratio %>%
+  fixef %>% as.list() %>% as_data_frame() %>%
+  mutate(diff_indifference = -`(Intercept)` / diffWRtoCN) ->
+  fixef_indifference_points
+
+p_diff_by_subj + 
+  geom_vline(aes(xintercept = diff_indifference), data=indifference_points) +
+  geom_vline(aes(xintercept = diff_indifference), data=fixef_indifference_points, linetype=2) +
+  # restrict the x limits because some people have wacky indifference points
+  lims(x=c(min(d$diffWRtoCN), max(d$diffWRtoCN)))
+
+
+```
+
