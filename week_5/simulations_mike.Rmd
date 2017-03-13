@@ -1,0 +1,79 @@
+---
+title: "Simulation-based intuition building"
+output: html_notebook
+---
+
+Simulation is a great way to build intuition. First, simulate some data. We will make our design matrix first. 
+
+```{r}
+library(tidyverse)
+library(data.table)
+library(dtplyr) # lets plyr and data.table play nicely
+
+gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effect_size,
+							  subject_ranef_cov, item_ranef_cov){
+
+	# Make vectors of what things can be 
+	items <- 1:n_items
+	subjects <- 1:n_subjects
+	conditions <- 1:2
+	reps <- 1:n_repetitions
+
+	# all possible combinations
+	d <- expand.grid(item=items, subject=subjects, cond=conditions, rep=reps) %>% as.data.table()
+
+
+	d[,trial:=1:.N, by="subject"]
+	d[,fixef_intercept:=intercept][,fixef_beta:=effect_size]
+
+	subj_ranefs <- rmvnorm(n_subjects, mean = rep(0, 2), sigma=subject_ranef_cov) %>% as.data.table()
+	setnames(subj_ranefs, c("subj_intercept", "subj_beta"))
+	subj_ranefs[,subject:=as.integer(rownames(subj_ranefs))]
+
+	item_ranefs <- rmvnorm(n_items, mean = rep(0, 2), sigma=item_ranef_cov) %>% as.data.table()
+	setnames(item_ranefs, c("item_intercept", "item_beta"))
+	item_ranefs[,item:=as.integer(rownames(item_ranefs))]
+	d <- left_join(d, subj_ranefs, by="subject")
+	d <- left_join(d, item_ranefs, by="item")
+
+	d[,combined_intercept:=fixef_intercept + subj_intercept + item_intercept]
+	d[,combined_beta:=fixef_beta + subj_beta + item_beta]
+	d[,x:=ifelse(cond==1, -0.5, 0.5)]
+	d[,error:=rnorm(nrow(d))]
+	d[,y:=combined_intercept + combined_beta * x + error]
+
+	return(d)
+}
+```
+
+Here is a thing we might want to know: what is the type 1 and type 2 error of our design? First, power: 
+
+```{r} 
+param_list <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0.2,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+
+run_fixef_regression <- function(param_list){
+  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+  m <- lm(y ~ x, data = d)
+  s <- summary(m) %>% coef %>% as.data.table
+  return(s[2,])
+}
+
+# power! 
+library(doParallel)
+registerDoParallel(cores=2)
+nSims <- 1000
+fx <- ldply(1:nSims, function(x) run_fixef_regression(param_list), .parallel=TRUE) %>% as.data.table
+setnames(fx,  c("est","se","tval","pval"))
+fx[,sig:=pval<=0.05]
+sum(fx$sig) / nSims
+```
+
+Next, alpha level: 
+
+```{r}
+param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+fx_null <- ldply(1:nSims, function(x) run_fixef_regression(param_list_null), .parallel=TRUE) %>% as.data.table
+setnames(fx_null,  c("est","se","tval","pval"))
+fx_null[,sig:=pval<=0.05]
+sum(fx_null$sig)/nSims
+```
