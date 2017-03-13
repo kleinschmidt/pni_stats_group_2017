@@ -1,0 +1,165 @@
+---
+title: "Simulation-based intuition building"
+output: html_notebook
+---
+
+Simulation is a great way to build intuition. First, simulate some data. We will make our design matrix first. 
+
+```{r}
+library(tidyverse)
+library(dtplyr) # lets plyr and data.table play nicely
+
+n_subjects <- 10
+n_items <- 5
+n_repetitions <- 10
+
+# Make vectors of what things can be 
+items <- 1:n_items
+subjects <- 1:n_subjects
+conditions <- 1:2
+reps <- 1:n_repetitions
+
+# all possible combinations
+d <- expand.grid(item=items, subject=subjects, cond=conditions, rep=reps) %>% as.data.table()
+
+# now add trial info. 
+# .N is a special read-only data.table variable that contains
+# the number of elements in group (i.e. trials per subject)
+d[,trial:=1:.N, by="subject"]
+```
+
+Now we actually populate the components of our effect. Assume we are the most general model: a random effects model with correlated random intercepts and slopes for subjects and items. 
+First, the fixed effects: 
+```{r}
+intercept <- 5
+effect_size <- 0.05
+d[,fixef_intercept:=intercept][,fixef_beta:=effect_size]
+```
+
+Next, the random effects of subject. Each subject's intercept and slope are a draw from a bivariate normal distribution with mean 0 and some covariance. 
+
+```{r}
+subject_ranef_cov <- 5 * matrix(c(1, 0.2,
+                            0.2, 1), nrow=2)
+
+subj_ranefs <- rmvnorm(n_subjects, mean = rep(0, 2), sigma=subject_ranef_cov) %>% as.data.table()
+setnames(subj_ranefs, c("subj_intercept", "subj_beta"))
+subj_ranefs[,subject:=as.integer(rownames(subj_ranefs))]
+```
+Random effects for item! Same thing: 
+```{r}
+item_ranef_cov <-8 *  matrix(c(1, 0.2,
+                            0.2, 1), nrow=2)
+
+item_ranefs <- rmvnorm(n_items, mean = rep(0, 2), sigma=item_ranef_cov) %>% as.data.table()
+setnames(item_ranefs, c("item_intercept", "item_beta"))
+item_ranefs[,item:=as.integer(rownames(item_ranefs))]
+```
+
+Now we combine them all using some table joins: 
+
+```{r}
+d <- left_join(d, subj_ranefs, by="subject")
+d <- left_join(d, item_ranefs, by="item")
+```
+
+So, what are our effects? 
+
+```{r}
+d[,combined_intercept:=fixef_intercept + subj_intercept + item_intercept]
+d[,combined_beta:=fixef_beta + subj_beta + item_beta]
+d[,x:=ifelse(cond==1, -0.5, 0.5)]
+d[,error:=rnorm(nrow(d))]
+d[,y:=combined_intercept + combined_beta * x + error]
+```
+
+Now we have a fake data frame! We can do plotting on it:
+
+```{r}
+p <- ggplot(d, aes(x=as.factor(cond), y=y)) + stat_summary(fun.data="mean_cl_boot")
+p
+
+p <- ggplot(d, aes(x=as.factor(cond), y=y)) + stat_summary(fun.data="mean_cl_boot") + facet_wrap(~subject)
+p
+```
+
+We can also do analysis on it: 
+
+```{r}
+m <- lmer(y ~ x + (1+x|subject) + (1+x|item), data=d)
+summary(m)
+# would be nice to do this with stan and you can -- but 
+# slow enough to not do in a class setting
+# m <- stan_lmer(y ~ x + (1+x|subject) + (1+x|item), data=d)
+```
+
+Of course, we don't want to simulate just one dataset. We want to simulate lots of them! Time to write some functions. 
+
+```{r}
+gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effect_size,
+							  subject_ranef_cov, item_ranef_cov){
+
+	# Make vectors of what things can be 
+	items <- 1:n_items
+	subjects <- 1:n_subjects
+	conditions <- 1:2
+	reps <- 1:n_repetitions
+
+	# all possible combinations
+	d <- expand.grid(item=items, subject=subjects, cond=conditions, rep=reps) %>% as.data.table()
+
+
+	d[,trial:=1:.N, by="subject"]
+	d[,fixef_intercept:=intercept][,fixef_beta:=effect_size]
+
+	subj_ranefs <- rmvnorm(n_subjects, mean = rep(0, 2), sigma=subject_ranef_cov) %>% as.data.table()
+	setnames(subj_ranefs, c("subj_intercept", "subj_beta"))
+	subj_ranefs[,subject:=as.integer(rownames(subj_ranefs))]
+
+	item_ranefs <- rmvnorm(n_items, mean = rep(0, 2), sigma=item_ranef_cov) %>% as.data.table()
+	setnames(item_ranefs, c("item_intercept", "item_beta"))
+	item_ranefs[,item:=as.integer(rownames(item_ranefs))]
+	d <- left_join(d, subj_ranefs, by="subject")
+	d <- left_join(d, item_ranefs, by="item")
+
+	d[,combined_intercept:=fixef_intercept + subj_intercept + item_intercept]
+	d[,combined_beta:=fixef_beta + subj_beta + item_beta]
+	d[,x:=ifelse(cond==1, -0.5, 0.5)]
+	d[,error:=rnorm(nrow(d))]
+	d[,y:=combined_intercept + combined_beta * x + error]
+
+	return(d)
+}
+```
+
+Here is a thing we might want to know: what is the type 1 and type 2 error of our design? First, power: 
+
+```{r} 
+param_list <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0.2,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+
+run_fixef_regression <- function(param_list){
+  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+  m <- lm(y ~ x, data = d)
+  s <- summary(m) %>% coef %>% as.data.table
+  return(s[2,])
+}
+
+# power! 
+library(doParallel)
+registerDoParallel(cores=2)
+nSims <- 1000
+fx <- ldply(1:nSims, function(x) run_fixef_regression(param_list), .parallel=TRUE) %>% as.data.table
+setnames(fx,  c("est","se","tval","pval"))
+fx[,sig:=pval<=0.05]
+sum(fx$sig) / nSims
+```
+
+Next, alpha level: 
+
+```{r}
+param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+fx_null <- ldply(1:nSims, function(x) run_fixef_regression(param_list_null), .parallel=TRUE) %>% as.data.table
+setnames(fx_null,  c("est","se","tval","pval"))
+fx_null[,sig:=pval<=0.05]
+sum(fx_null$sig)/nSims
+```
