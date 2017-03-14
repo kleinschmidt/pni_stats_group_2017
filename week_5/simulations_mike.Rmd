@@ -75,7 +75,7 @@ mean(fx$statistic < -2) # type S error
 mean(fx$estimate) # average beta estimate across sims
 ```
 
-Now that we have these sims, we can do a few things. First, the proportion that found a significant effect: `r mean(fx$p.value<=0.05)`. That's our power. This is not as great as it looks, since we found a significant effect in the wrong direction `r mean(fx$statistic < -2)` of the time. This is what Gelman calls "type S" error, i.e. finding a significant effect with the wrong sign. On average in `r nSims` experiments we do recover our effect, but there's a lot of subtlety in the details. Next, the alpha level is the proportion of experiments in which we find an effect when none exists. To do this, resimulate exactly as above, except with an effect size of 0: 
+Now that we have these sims, we can do a few things. First, the proportion that found a significant effect: `r mean(fx$p.value<=0.05)`. That's our power. This is not as great as it looks, since we found a significant effect in the wrong direction `r mean(fx$statistic < -2)` of the time. This is what Gelman calls "type S" error, i.e. finding a significant effect with the wrong sign. On average across `r nSims` experiments we do recover our effect, but there's a lot of subtlety in the details. Next, the alpha level is the proportion of experiments in which we find an effect when none exists. To do this, resimulate exactly as above, except with an effect size of 0: 
 
 ```{r}
 param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0, subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
@@ -85,7 +85,7 @@ mean(fx_null$estimate)
 mean(fx_null$statistic > 2)
 ```
 
-This is a slightly pathological example in that we have only 5 items per subject, but nonetheless we find a significant effect in `r fx_null$p.value < 0.05` of experiments, or `r mean(fx_null$statistic > 2)` in a one-sided test. This in spite the fact that on average (across experiments) our effect size estimate is pretty good (`r mean(fx_null$estimate)`). This is before we consider any intentional or uninentional p-hacking.  
+This is a slightly pathological example in that we have only 5 items per subject, but nonetheless we find a significant effect in `r mean(fx_null$p.value < 0.05)` of experiments, or `r mean(fx_null$statistic > 2)` in a one-sided test. This in spite the fact that on average (across experiments) our effect size estimate is pretty good (`r mean(fx_null$estimate)`). This is before we consider any intentional or uninentional p-hacking.  
 
 # What if we do repeated measures ANOVA? 
 
