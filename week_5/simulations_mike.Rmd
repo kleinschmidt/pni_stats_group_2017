@@ -12,7 +12,7 @@ library(data.table)
 library(mvtnorm) # multivariate normal and t distributions
 library(dtplyr) # lets plyr and data.table play nicely
 
-gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effect_size, subject_ranef_cov, item_ranef_cov){
+gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov){
 
 	# Make vectors of what things can be 
 	items <- 1:n_items
@@ -46,11 +46,11 @@ gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effe
 }
 ```
 
-Now, to build intuition, we can simulate a lot of synthetic datasets and analyze them. To do this, we write a function that generates synthetic data, analyzes it, and extracts the stats. Then we run it many times and look at the distribution of outcomes. First, our function:
+Now, to build intuition, we can simulate a lot of synthetic datasets and analyze them. To do this, we write a function that generates synthetic data, analyzes it, and extracts the stats. Then we run it many times and look at the distribution of outcomes. First, our function. A little R trick here: we pass in a function for data generation, so we can reuse all the analysis simulators on different data generation functions. 
 
 ```{r} 
-run_fixef_regression <- function(param_list){
-  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+run_fixef_regression <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
   m <- lm(y ~ x, data = d)
   s <- broom::tidy(m)
   return(s[-1,])
@@ -68,8 +68,8 @@ Now we run the sims in parallel using the `doParallel` back end for the `foreach
 library(doParallel)
 library(plyr)
 registerDoParallel(cores=2)
-nSims <- 1000 # 100 is fast but can be unstable; 1000 is good
-fx <- ldply(1:nSims, function(x) run_fixef_regression(param_list), .parallel=TRUE) %>% as.data.table
+nSims <- 10 # 100 is fast but can be unstable; 1000 is good
+fx <- ldply(1:nSims, function(x) run_fixef_regression(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx$p.value<=0.05) # power
 mean(fx$statistic < -2) # type S error
 mean(fx$estimate) # average beta estimate across sims
@@ -79,7 +79,7 @@ Now that we have these sims, we can do a few things. First, the proportion that 
 
 ```{r}
 param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0, subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_null <- ldply(1:nSims, function(x) run_fixef_regression(param_list_null), .parallel=TRUE) %>% as.data.table
+fx_null <- ldply(1:nSims, function(x) run_fixef_regression(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx_null$p.value < 0.05)
 mean(fx_null$estimate)
 mean(fx_null$statistic > 2)
@@ -93,8 +93,8 @@ Repeated measures anova is a standard thing to do in some fields in the presence
 
 As before, make our function that generates data, fits, and returns results: 
 ```{r}
-run_repeated_anova <- function(param_list){
-  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+run_repeated_measures <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
   m <- aov(y ~ 1 + x + Error(subject/x), data=d)
   # s <- broom::tidy(m) # this is broken, https://github.com/tidyverse/broom/issues/95
   # do this ugly thing instead
@@ -106,8 +106,7 @@ run_repeated_anova <- function(param_list){
 
 Run many times: 
 ```{r}
-param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_null_repeated_measures <- ldply(1:nSims, function(x) run_repeated_anova(param_list_null), .parallel=TRUE) %>% as.data.table
+fx_null_repeated_measures <- ldply(1:nSims, function(x) run_repeated_measures(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx_null_repeated_measures$p.value < 0.05)
 ```
 This is slightly better than above: `r mean(fx_null_repeated_measures$p.value < 0.05)` found significant. 
@@ -117,24 +116,23 @@ This is slightly better than above: `r mean(fx_null_repeated_measures$p.value < 
 Another thing done to approximate random effects designs, primarily in fMRI-associated fields, is to do a regression on each subject, and then perform a t-test on the betas against 0. What this does is ignore uncertainty associated with the beta-estiamte, so it will again be anti-conservative. 
 
 ```{r}
-run_ttest_on_betas <- function(param_list){
-  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+run_ttest_on_betas <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
   alltests <- ddply(d, .(subject), function(subjdata) lm(y~x, data=subjdata) %>% broom::tidy()) %>% as.data.table
   return(broom::tidy(t.test(alltests[term=="x"]$estimate)))
 }
 ```
 
 ```{r}
-param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_null_ttest_betas <- ldply(1:nSims, function(x) run_ttest_on_betas(param_list_null), .parallel=TRUE) %>% as.data.table
+fx_null_ttest_betas <- ldply(1:nSims, function(x) run_ttest_on_betas(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx_null_ttest_betas$p.value < 0.05)
 ```
 The best of the bunch (and cut further if we go one-sided). 
 
 # What does a proper mixed model do? 
 ```{r}
-run_lmer <- function(param_list){
-  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
+run_uncorr_lmer <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
   # the double bar notation is for uncorrelated random effects (which is what we generated with diagonal covariances)
   m <- lmer(y ~ x + (1 + x || subject) + (1 + x || item), data=d)
   s <- broom::tidy(m) %>% as.data.table
@@ -145,15 +143,14 @@ This will take a while to run:
 ```{r}
 library(lme4)
 param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_null_lmer <- ldply(1:nSims, function(x) run_lmer(param_list_null), .parallel=TRUE) %>% as.data.table
+fx_null_lmer <- ldply(1:nSims, function(x) run_uncorr_lmer(gen_synth_dataset, param_list_null), .parallel=TRUE) %>% as.data.table
 mean(abs(fx_null_lmer$statistic) > 2) # ball park, since degrees of freedom are not defined -- this is two-sided, one-sided will be even better. 
 ```
 The differences are fairly stark here. In real data they may in fact be more stark, for example because the between-subject variance is usually larger than the within-subject variance (i.e. the scale on the random effect covariances is greater than the residual variance). 
 
 We can look at our power and type S error rates: 
 ```{r}
-param_list <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0.2 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_lmer <- ldply(1:nSims, function(x) run_lmer(param_list), .parallel=TRUE) %>% as.data.table
+fx_lmer <- ldply(1:nSims, function(x) run_uncorr_lmer(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx_lmer$statistic > 2) # power
 mean(fx_lmer$statistic < -2) # "type S" error
 ```
