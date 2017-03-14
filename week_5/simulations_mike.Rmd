@@ -67,8 +67,8 @@ Now we run the sims in parallel using the `doParallel` back end for the `foreach
 ```{r}
 library(doParallel)
 library(plyr)
-registerDoParallel(cores=2)
-nSims <- 10 # 100 is fast but can be unstable; 1000 is good
+registerDoParallel(cores=12)
+nSims <- 5000 # 100 is fast but can be unstable; 1000 is good
 fx <- ldply(1:nSims, function(x) run_fixef_regression(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
 mean(fx$p.value<=0.05) # power
 mean(fx$statistic < -2) # type S error
