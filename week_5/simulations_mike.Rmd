@@ -1,6 +1,7 @@
 ---
 title: "Simulation-based intuition building"
 output: html_notebook
+author: Mike Shvartsman
 ---
 
 Simulation is a great way to build intuition. First, simulate some data. We will make our design matrix first. 
@@ -8,10 +9,10 @@ Simulation is a great way to build intuition. First, simulate some data. We will
 ```{r}
 library(tidyverse)
 library(data.table)
+library(mvtnorm) # multivariate normal and t distributions
 library(dtplyr) # lets plyr and data.table play nicely
 
-gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effect_size,
-							  subject_ranef_cov, item_ranef_cov){
+gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov){
 
 	# Make vectors of what things can be 
 	items <- 1:n_items
@@ -21,7 +22,6 @@ gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effe
 
 	# all possible combinations
 	d <- expand.grid(item=items, subject=subjects, cond=conditions, rep=reps) %>% as.data.table()
-
 
 	d[,trial:=1:.N, by="subject"]
 	d[,fixef_intercept:=intercept][,fixef_beta:=effect_size]
@@ -46,34 +46,140 @@ gen_synth_dataset <- function(n_subjects, n_items, n_repetitions, intecept, effe
 }
 ```
 
-Here is a thing we might want to know: what is the type 1 and type 2 error of our design? First, power: 
-
-```{r} 
-param_list <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0.2,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-
-run_fixef_regression <- function(param_list){
-  d <- with(param_list, gen_synth_dataset(n_subjects, n_items, n_repetitions, intercept, effect_size, subject_ranef_cov, item_ranef_cov))
-  m <- lm(y ~ x, data = d)
-  s <- summary(m) %>% coef %>% as.data.table
-  return(s[2,])
-}
-
-# power! 
-library(doParallel)
-registerDoParallel(cores=2)
-nSims <- 1000
-fx <- ldply(1:nSims, function(x) run_fixef_regression(param_list), .parallel=TRUE) %>% as.data.table
-setnames(fx,  c("est","se","tval","pval"))
-fx[,sig:=pval<=0.05]
-sum(fx$sig) / nSims
-```
-
-Next, alpha level: 
+Now, to build intuition, we can simulate a lot of synthetic datasets and analyze them. To do this, we write a function that generates synthetic data, analyzes it, and extracts the stats. Then we run it many times and look at the distribution of outcomes. First, our function. A little R trick here: we pass in a function for data generation, so we can reuse all the analysis simulators on different data generation functions. 
 
 ```{r}
-param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0 ,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
-fx_null <- ldply(1:nSims, function(x) run_fixef_regression(param_list_null), .parallel=TRUE) %>% as.data.table
-setnames(fx_null,  c("est","se","tval","pval"))
-fx_null[,sig:=pval<=0.05]
-sum(fx_null$sig)/nSims
+run_fixef_regression <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
+  m <- lm(y ~ x, data = d)
+  s <- broom::tidy(m)
+  return(s[-1,])
+}
 ```
+
+Next, a list of parameters: 
+```{r}
+param_list <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0.2,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+```
+
+Now we run the sims in parallel using the `doParallel` back end for the `foreach` package, wrapped in `plyr`. I am only mentioning this for those who might want to google parallel R further. 
+
+```{r}
+library(doParallel)
+library(plyr)
+registerDoParallel(cores=12)
+nSims <- 5000 # 100 is fast but can be unstable; 1000 is good
+fx <- ldply(1:nSims, function(x) run_fixef_regression(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
+mean(fx$p.value<=0.05) # power
+mean(fx$statistic < -2) # type S error
+mean(fx$estimate) # average beta estimate across sims
+```
+
+Now that we have these sims, we can do a few things. First, the proportion that found a significant effect: `r mean(fx$p.value<=0.05)`. That's our power. This is not as great as it looks, since we found a significant effect in the wrong direction `r mean(fx$statistic < -2)` of the time. This is what Gelman calls "type S" error, i.e. finding a significant effect with the wrong sign. On average across `r nSims` experiments we do recover our effect, but there's a lot of subtlety in the details. Next, the alpha level is the proportion of experiments in which we find an effect when none exists. To do this, resimulate exactly as above, except with an effect size of 0: 
+
+```{r}
+param_list_null <- list(n_subjects = 10, n_items = 5, n_repetitions = 20, intercept=5, effect_size = 0, subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+fx_null <- ldply(1:nSims, function(x) run_fixef_regression(gen_synth_dataset, param_list_null), .parallel=TRUE) %>% as.data.table
+mean(fx_null$p.value < 0.05)
+mean(fx_null$estimate)
+mean(fx_null$statistic > 2)
+```
+
+This is a slightly pathological example in that we have only 5 items per subject, but nonetheless we find a significant effect in `r mean(fx_null$p.value < 0.05)` of experiments, or `r mean(fx_null$statistic > 2)` in a one-sided test. This in spite the fact that on average (across experiments) our effect size estimate is pretty good (`r mean(fx_null$estimate)`). This is before we consider any intentional or uninentional p-hacking.  
+
+# But the field lives and dies by replication, right? 
+
+Maybe. This simulation told us that the probability of finding a spurious effect is `r mean(fx_null$p.value < 0.05)`. Assuming that each experiment is independent, that means that each experiment is a single bernoulli draw with success probability `r mean(fx_null$p.value < 0.05)`. That means that the cumulative probability of a non-replication is geometrically distributed with `p = ``r 1-mean(fx_null$p.value < 0.05)`, though more realistically we will likely do one-sided tests after that point. This means that if the first effect is positive, on average we will see `r mean(fx_null$statistic > 2)/(1-mean(fx_null$statistic > 2))` "replications" before the first null or opposite-direction effect, and if it is negative we will see `r mean(fx_null$statistic > -2)/(1-mean(fx_null$statistic > -2))` instead. 
+
+What people often do on a non-replication is try to explain why they failed to replicate, and run another experiment. Supposing for sake of argument that they have previously detected a positive effect, even if the hypotnetical covariate does nothing, there is a `r mean(fx_null$statistic > 2)` probability that they will "successfully explain away" the nonreplication, "discovering" a new interaction term. 
+
+# What if we do repeated measures ANOVA? 
+
+Repeated measures anova is a standard thing to do in some fields in the presence of subject-to-subject variability. It is equivalent to a random effects model with intercepts and slopes for *either* subject or item, but cannot handle effects of both. I've googled to get the right syntax to use anova here instead of `lmer` because I think it's substantially faster (though to be fair, I have not checked). 
+
+As before, make our function that generates data, fits, and returns results: 
+```{r}
+run_repeated_measures <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
+  m <- aov(y ~ 1 + x + Error(subject/x), data=d)
+  # s <- broom::tidy(m) # this is broken, https://github.com/tidyverse/broom/issues/95
+  # do this ugly thing instead
+  s <- summary(m)[[3]][[1]][1,] %>% as.data.table
+  names(s) <- c("df","ssq","msq","F","p.value")
+  return(s)
+}
+```
+
+Run many times: 
+```{r}
+fx_null_repeated_measures <- ldply(1:nSims, function(x) run_repeated_measures(gen_synth_dataset, param_list_null), .parallel=TRUE) %>% as.data.table
+mean(fx_null_repeated_measures$p.value < 0.05)
+```
+This is slightly better than above: `r mean(fx_null_repeated_measures$p.value < 0.05)` found significant. 
+
+# What if we do t test on betas? 
+
+Another thing done to approximate random effects designs, primarily in fMRI-associated fields, is to do a regression on each subject, and then perform a t-test on the betas against 0. What this does is ignore uncertainty associated with the beta-estiamte, so it will again be anti-conservative. 
+
+```{r}
+run_ttest_on_betas <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
+  alltests <- ddply(d, .(subject), function(subjdata) lm(y~x, data=subjdata) %>% broom::tidy()) %>% as.data.table
+  return(broom::tidy(t.test(alltests[term=="x"]$estimate)))
+}
+```
+
+```{r}
+fx_null_ttest_betas <- ldply(1:nSims, function(x) run_ttest_on_betas(gen_synth_dataset, param_list_null), .parallel=TRUE) %>% as.data.table
+mean(fx_null_ttest_betas$p.value < 0.05)
+```
+The best of the bunch (and cut further if we go one-sided). 
+
+# What does a proper mixed model do? 
+```{r}
+run_uncorr_lmer <- function(datagen_fun, param_list){
+  d <- do.call(datagen_fun, param_list)
+  # the double bar notation is for uncorrelated random effects (which is what we generated with diagonal covariances)
+  m <- lmer(y ~ x + (1 + x || subject) + (1 + x || item), data=d)
+  s <- broom::tidy(m) %>% as.data.table
+  return(s[group=='fixed' & term != "(Intercept)"])
+}
+```
+This will take a while to run: 
+```{r}
+library(lme4)
+fx_null_lmer <- ldply(1:nSims, function(x) run_uncorr_lmer(gen_synth_dataset, param_list_null), .parallel=TRUE) %>% as.data.table
+mean(abs(fx_null_lmer$statistic) > 2) # ball park, since degrees of freedom are not defined -- this is two-sided, one-sided will be even better. 
+```
+The differences are fairly stark here. In real data they may in fact be more stark, for example because the between-subject variance is usually larger than the within-subject variance (i.e. the scale on the random effect covariances is greater than the residual variance). 
+
+We can look at our power and type S error rates: 
+```{r}
+fx_lmer <- ldply(1:nSims, function(x) run_uncorr_lmer(gen_synth_dataset, param_list), .parallel=TRUE) %>% as.data.table
+mean(fx_lmer$statistic > 2) # power
+mean(fx_lmer$statistic < -2) # "type S" error
+```
+
+What is happening here? The model is telling us that we actually have no power to detect an effect with this design, assuming we have the random effect specification right! I suspect that this is for a number of reasons: (1) because the number of unique items is only 5, so our ability to generalize past them to a population is very limited, (2) because we only have 10 subjects while trying to detect an effect at an SNR of 0.2. If we instead go to a more sensible design of 100 subjects, 20 items, and 25 repetitions, things get somewhat better: 
+
+```{r}
+param_list_20items  <- list(n_subjects = 100, n_items = 20, n_repetitions = 25, intercept=5, effect_size = 0.2,subject_ranef_cov=diag(2), item_ranef_cov=diag(2))
+fx_lmer_20items <- ldply(1:nSims, function(x) run_uncorr_lmer(gen_synth_dataset, param_list_20items), .parallel=TRUE) %>% as.data.table
+mean(fx_lmer_20items$statistic > 2) # power
+mean(fx_lmer_20items$statistic < -2) # "type S" error
+```
+
+Even here we are underpowered, but not by as much. Importantly, the type S error is effectively nil. 
+
+
+# Other things worth simulating: 
+
+These are left as an exercise for the reader, or for a later meeting. 
+
+- Unbalanced cells: the data generation code above runs with all possible permutations of subjects, items, etc. In practice, this is often not the case with items/conditions, either because items uniquely identify conditions, because items are placed in different conditions for each subject (incl. in latin-square settings), because it is not possible to fully counterbalance, etc etc. It is also often not the case with subjects because of removed trials due to errors and other issues, or in between-subject analyses (in which the right thing to model is subject intercepts only, but item slopes). 
+
+- Random effects sensitive to condition: following Sebastian's suggestion, can we construct an example where the difference between the random effect distribution in different conditions magnifies or shrinks a fixed effect? The example given was a stroop task where each stimulus can be thought of as a compound stimulus of color and word. The random effects model would be `(1+x|color) + (1+x|word)`. If the random effect correlation structure is different between words and colors, could this magnify or shrink the stroop effect? 
+
+- Early stopping and data peeking: one can construct a simulator that adds subjects until a significant effect is found, or some maximum number of subjects is reached. One can also construct a simulator that collects a fixed number of subjects, and then collects more only if the p value is below 0.06. What will that do? 
+
+- File drawer effect sizes: suppose we run a set of simulated analyses, dump all the non-significant ones (file drawer!), and use the remainder to compute effect sizes (what we actually got to "read in papers"). Then we compute how much data we need to achieve 80% power based on this computed effect size (which will be inflated). Then we run our simulated analyses on a new set of datasets with the true (not estimated) effect size, but powered based on the estimated effect size. What is our effective power then? 
